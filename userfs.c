@@ -46,21 +46,19 @@ enum ufs_error_code ufs_errno() {
 	return ufs_errn;
 } 
 
-int check_flags(int flags) {
+int has_create_flag(int flags) {
 	if (!(flags & UFS_CREATE)) {
 		ufs_errn = UFS_ERR_NO_FILE;
-		return -1;
+		return 0;
 	}
-	return 0;
+	return 1;
 }
 
 /** Returns fd or -1 if error occured. Check ufs_errno() for a code.
  * - UFS_ERR_NO_FILE - no such file, and UFS_CREATE flag is not specified. */
 int ufs_open(const char *filename, int flags) {
-	printf("Yay\n");
-	if (!file_list && check_flags(flags)) {
+	if (!file_list && !has_create_flag(flags)) {
 		return -1;
-		printf("Check\n");
 	}
 
 	struct file *current_file = file_list;
@@ -70,13 +68,11 @@ int ufs_open(const char *filename, int flags) {
 		current_file = current_file->next;
 	}
 
-	printf("One\n");
-
-	if (check_flags(flags))
+	if (!has_create_flag(flags))
 		return -1;
 
-	current_file = malloc(sizeof(struct file));
-	memset(current_file, 0, sizeof(struct file)); 
+	current_file = calloc(1, sizeof(struct file));
+	current_file->name = filename;
 
 	if (file_list) {
 		last_file->next = current_file;
@@ -88,11 +84,10 @@ int ufs_open(const char *filename, int flags) {
 	last_file = current_file;
 
 manage_fd:
-	printf("Checkkity\n");
 	++current_file->refs;
 	for (int i = 0; i < fd_count; ++i) {
 		if (fd_array[i] == NULL) {
-			struct fdesc *fd = malloc(sizeof(struct fdesc));
+			struct fdesc *fd = calloc(1, sizeof(struct fdesc));
 			fd->file = current_file;
 			fd_array[i] = fd;
 			return i;
@@ -103,13 +98,22 @@ manage_fd:
 		fd_capacity = (fd_capacity + 1) * 2;
 	}
 
-	printf("Two\n");
-
-	struct fdesc *fd = malloc(sizeof(struct fdesc));
+	struct fdesc *fd = calloc(1, sizeof(struct fdesc));
 	fd->file = current_file;
 	fd_array[fd_count] = fd;
 
 	return fd_count++;
+}
+
+struct block* next_block(struct block* previous_block) {
+	struct block* next_block = previous_block->next;
+	if (!next_block) {
+		next_block = calloc(1, sizeof(struct block));
+		next_block->memory = malloc(BLOCK_SIZE);
+		previous_block->next = next_block;
+		next_block->prev = previous_block;
+	}
+	return next_block;
 }
 
 /** Params: file descriptor, destination buffer, buffer size.
@@ -120,66 +124,57 @@ ssize_t ufs_write(int fd, const char *buf, size_t size) {
 	if (fd >= fd_count || fd_array[fd] == NULL) {
 		ufs_errn = UFS_ERR_NO_FILE;
 		return -1;
-	} 
-
-	printf("Three\n");
+	}
 
 	if (size <= 0) 
 		return 0;
 
 	struct file *f = fd_array[fd]->file;
-	struct block *current_block;
 
-	if (fd_array[fd]->block_num) {
-		current_block = f->block_list;
-		for (int i = 0; i < fd_array[fd]->block_num; ++i) {
-			current_block = current_block->next;
-		}
-	} else {
-		current_block = malloc(sizeof(struct block)); 
-		f->block_list = current_block;
-		f->last_block = current_block;
-		fd_array[fd]->block_num = 1;
+	if (!f->block_list) {
+		f->block_list = calloc(1, sizeof(struct block));
+		f->block_list->memory = malloc(BLOCK_SIZE);
 	}
-	
+
+	struct block *current_block = f->block_list;
+	int i = 0;
+	for (i = 0; i < fd_array[fd]->block_num; ++i) {
+		current_block = next_block(current_block);
+	}
+
 	size_t bytes_written = 0;
 	if (fd_array[fd]->offset) {
-		int n = BLOCK_SIZE - fd_array[fd]->offset;
-		memcpy(current_block + fd_array[fd]->offset, buf, n);
-		bytes_written += size - n;
+		int n = BLOCK_SIZE - fd_array[fd]->offset >= size ? 
+			size : BLOCK_SIZE - fd_array[fd]->offset;
+		memcpy(current_block->memory + fd_array[fd]->offset, buf, n);
+		bytes_written += n;
 		size -= n;
 		buf += n;
+		if (size) {
+			++i;
+			current_block = next_block(current_block);
+		}
 	}
 
-	if (size < 0) 
-		return bytes_written;
-
-	struct block *next_block = malloc(sizeof(struct block));
 	while (size) {
-		++fd_array[fd]->block_num;
-		current_block->next = next_block;
-		next_block->prev = current_block;
-		current_block = next_block;
-
-		if (size < BLOCK_SIZE) {
-			memcpy(current_block, buf, size);
+		if (size <= BLOCK_SIZE) {
+			memcpy(current_block->memory, buf, size);
 			bytes_written += size;
+			fd[fd_array]->offset = size;
 			break;
 		}
-		// ne v block pishem a v ego memory, ee tozhe malloc
-		memcpy(current_block, buf, BLOCK_SIZE);
-		fd_array[fd]->offset = abs(size - BLOCK_SIZE); 
-		bytes_written += size - BLOCK_SIZE;
+		memcpy(current_block->memory, buf, BLOCK_SIZE);
+		bytes_written += BLOCK_SIZE;
 		size -= BLOCK_SIZE;
 		buf += BLOCK_SIZE;
 
-		if (size > 0) {
-			next_block = malloc(sizeof(struct block)); 
-		}
+		current_block = next_block(current_block);
+		++i;
 	}
 
+	fd[fd_array]->block_num = i;
 	return bytes_written;
-} // NO MEM ERR zayuzat'
+}
 
 /** size - max bytes to read.
  * Return value > 0 number of bytes read; 0 EOF; -1 Error occured. 
@@ -188,23 +183,54 @@ ssize_t ufs_read(int fd, char *buf, size_t size) {
 	if (fd >= fd_count || fd_array[fd] == NULL) {
 		ufs_errn = UFS_ERR_NO_FILE;
 		return -1;
-	} else if (!fd_array[fd]->block_num) {
-		ufs_errn = UFS_ERR_READING_EMPTY_FILE;
-		return -1;
 	} else if (size <= 0) {
 		return 0;
 	}
 
 	struct file *f = fd_array[fd]->file;
-	while (size) {
-		if (fd_array[fd]->block_num) {
-			struct block *current_block = f->block_list;
-			for (int i = 0; i < fd_array[fd]->block_num; ++i) {
-				current_block = current_block->next;
-			}
+	struct block *current_block = f->block_list;
+	int i = 0;
+	for (i = 0; i < fd_array[fd]->block_num; ++i) {
+		current_block = current_block->next;
+	}
+
+	int bytes_readed = 0;
+	if (fd_array[fd]->offset) {
+		int n = BLOCK_SIZE - fd_array[fd]->offset >= size ? 
+			size : BLOCK_SIZE - fd_array[fd]->offset;
+		memcpy(buf, current_block->memory + fd_array[fd]->offset, n);
+		bytes_readed += n;
+		size -= n;
+		buf += n;
+		if (size) {
+			++i;
+			current_block = current_block->next;
 		}
 	}
 
+	while (current_block && size) {
+		if (size <= BLOCK_SIZE) {
+			memcpy(buf, current_block->memory, size);
+			bytes_readed += size;
+			fd_array[fd]->offset = size;
+			break;
+		}
+		memcpy(buf, current_block->memory, BLOCK_SIZE);
+		buf += BLOCK_SIZE;
+		bytes_readed += BLOCK_SIZE;
+		size -= BLOCK_SIZE;
+		current_block = current_block->next;
+		++i;
+
+		if (i == MAX_FILE_SIZE/BLOCK_SIZE && size > BLOCK_SIZE) {
+			ufs_errn = UFS_ERR_NO_MEM;
+			return -1;
+		}
+	}
+
+	fd_array[fd]->block_num = i;
+
+	return bytes_readed;
 }
 
 /** Return value 0 Success;-1 Error occured. 
