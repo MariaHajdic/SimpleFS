@@ -16,7 +16,6 @@ enum ufs_error_code {
 	UFS_ERR_NO_ERR = 0,
 	UFS_ERR_NO_FILE,
 	UFS_ERR_NO_MEM,
-	UFS_ERR_READING_EMPTY_FILE, // ?
 };
 
 /** Get code of the last error. */
@@ -38,7 +37,7 @@ ssize_t ufs_write(int fd, const char *buf, size_t size);
 ssize_t ufs_read(int fd, char *buf, size_t size);
 
 /** Return value 0 Success;-1 Error occured. 
- * Check ufs_errno() for a code. - UFS_ERR_NO_FILE - invalid file descriptor. */
+ * Check ufs_errno() for a code. - UFS_ERR_NO_FILE - invalid file descriptor.*/
 int ufs_close(int fd);
 
 /** Returns -1 if error occured. Check ufs_errno() for a code.

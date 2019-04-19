@@ -30,7 +30,7 @@ struct file {
 static struct file *file_list = NULL;
 static struct file *last_file = NULL;
 
-struct fdesc {
+struct fdesc { 
 	struct file *file;
 	int block_num; // where user left off
 	int offset; // and more precisely
@@ -59,7 +59,7 @@ int has_create_flag(int flags) {
 int ufs_open(const char *filename, int flags) {
 	if (!file_list && !has_create_flag(flags)) {
 		return -1;
-	}
+	}	// ufs_open("file", 0) == -1,
 
 	struct file *current_file = file_list;
 	while (current_file) {
@@ -234,7 +234,7 @@ ssize_t ufs_read(int fd, char *buf, size_t size) {
 }
 
 /** Return value 0 Success;-1 Error occured. 
- * Check ufs_errno() for a code. - UFS_ERR_NO_FILE - invalid file descriptor. */
+ * Check ufs_errno() for a code. - UFS_ERR_NO_FILE - invalid file descriptor.*/
 int ufs_close(int fd) {
 	if (fd >= fd_count || fd_array[fd] == NULL) {
 		ufs_errn = UFS_ERR_NO_FILE;
@@ -269,6 +269,20 @@ int ufs_delete(const char *filename) {
 				free(b->memory);
 				free(b);
 				b = next_block;
+			} 
+			
+			for (int i = 0; i < fd_count; ++i) {
+				if (!strcmp(fd_array[i]->file->name, filename)) {
+					free(fd_array[i]);
+					fd_array[i] = NULL;
+				}
+				
+			}
+			for (int j = fd_count; j > 0; --j) {
+				if (!fd_array[j]) 
+					--fd_count;
+				else
+					break;
 			}
 
 			free(current_file);
