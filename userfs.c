@@ -22,7 +22,7 @@ struct file {
 	struct block *block_list;
 	struct block *last_block;
 	int refs; // number of fds opened on file
-	const char *name;
+	char *name;
 	struct file *next;
 	struct file *prev;
 };
@@ -60,35 +60,30 @@ int ufs_open(const char *filename, int flags) {
 	int i = 0;
 	if (!file_list && !has_create_flag(flags)) {
 		return -1;
-	}	// ufs_open("file", 0) == -1,
-	// printf("%d\n", i++);
+	}	
 
 	struct file *current_file = file_list;
 	while (current_file) {
-		// printf("%d\n",current_file);
 		if (!strcmp(current_file->name, filename)) 
 			goto manage_fd;
 		current_file = current_file->next;
 	}
-	// printf("%d\n", i++);
 
 	if (!has_create_flag(flags))
 		return -1;
 
 	current_file = calloc(1, sizeof(struct file));
-	current_file->name = filename;
-	// printf("%d\n", i++);
+	current_file->name = malloc(strlen(filename));
+	memcpy(current_file->name, filename, strlen(filename));
 
 	if (file_list) {
 		last_file->next = current_file;
 		current_file->prev = last_file;
-		// printf("%d\n", i++);
 	} else {
 		file_list = current_file;
 	}
 
 	last_file = current_file;
-	// printf("%d\n", i++);
 
 manage_fd:
 	++current_file->refs;
@@ -100,16 +95,15 @@ manage_fd:
 			return i;
 		}
 	}
-	// printf("Manage\n");
+	
 	if (fd_count >= fd_capacity) {
-		fd_array = realloc(fd_array, (fd_capacity + 1) * 2 * sizeof(struct fdesc));
+		fd_array = realloc(fd_array, (fd_capacity+1) * 2*sizeof(struct fdesc));
 		fd_capacity = (fd_capacity + 1) * 2;
 	}
 
 	struct fdesc *fd = calloc(1, sizeof(struct fdesc));
 	fd->file = current_file;
 	fd_array[fd_count] = fd;
-	// printf("Still Manage\n");
 
 	return fd_count++;
 }
@@ -134,8 +128,6 @@ ssize_t ufs_write(int fd, const char *buf, size_t size) {
 		ufs_errn = UFS_ERR_NO_FILE;
 		return -1;
 	}
-
-	// block occupied in bytes
 
 	if (size <= 0) 
 		return 0;
@@ -199,7 +191,6 @@ ssize_t ufs_read(int fd, char *buf, size_t size) {
 	} else if (size <= 0) {
 		return 0;
 	}
-	// printf("Hey\n");
 
 	struct file *f = fd_array[fd]->file;
 	struct block *current_block = f->block_list;
@@ -207,41 +198,49 @@ ssize_t ufs_read(int fd, char *buf, size_t size) {
 	for (i = 0; i < fd_array[fd]->block_num; ++i) {
 		current_block = current_block->next;
 	}
-	// printf("rrrrrrrr\n");
-	int bytes_read = 0;
+	
+	int bytes_read = 0, curr_read = 0;
 	if (fd_array[fd]->offset) {
-		int n = BLOCK_SIZE - fd_array[fd]->offset >= size ? 
-			size : BLOCK_SIZE - fd_array[fd]->offset; 
-		memcpy(buf, current_block->memory + fd_array[fd]->offset, n);
-		bytes_read += ( (current_block->occupied > n) ? n : 
+		int n, offset = fd_array[fd]->offset;
+
+		if (BLOCK_SIZE - fd_array[fd]->offset >= size) {
+			n = size;
+			fd_array[fd]->offset += n; 
+		} else {
+			n = BLOCK_SIZE - fd_array[fd]->offset;
+			fd_array[fd]->offset = 0;
+		}
+
+		curr_read = ( (current_block->occupied > n) ? n : 
 			current_block->occupied );
+		bytes_read += curr_read;
+		memcpy(buf, current_block->memory + offset, curr_read);
 		size -= n;
 		buf += n;
-		// printf("AAAAAAAAAA\n");
+
 		if (size) {
 			++i;
-			// printf("%d\n",i);
 			current_block = current_block->next;
 		}
 	}
 
 	while (current_block && size) {
 		if (size <= BLOCK_SIZE) {
-			memcpy(buf, current_block->memory, size);
-			bytes_read += ( (current_block->occupied < size) ? 
+			curr_read = ( (current_block->occupied < size) ? 
 				current_block->occupied : size );
+			bytes_read += curr_read;
+			memcpy(buf, current_block->memory, curr_read);
 			fd_array[fd]->offset = size;
 			break;
 		}
-		// printf("WHILE %d\n",bytes_read);
-		memcpy(buf, current_block->memory, BLOCK_SIZE);
+		curr_read = ( (current_block->occupied < size) ? 
+			current_block->occupied : BLOCK_SIZE );
+		bytes_read += curr_read;
+		memcpy(buf, current_block->memory, curr_read);
 		buf += BLOCK_SIZE;
-		bytes_read += ( (current_block->occupied < size) ? 
-			current_block->occupied : size );
 		size -= BLOCK_SIZE;
 		current_block = current_block->next;
 		++i;
-		// printf("WHALE %d\n",bytes_read);
 		if (i == MAX_FILE_SIZE / BLOCK_SIZE && size > BLOCK_SIZE) {
 			ufs_errn = UFS_ERR_NO_MEM;
 			return -1;
@@ -249,49 +248,39 @@ ssize_t ufs_read(int fd, char *buf, size_t size) {
 	}
 
 	fd_array[fd]->block_num = i;
-	// printf("%d\n",bytes_read);
-	printf("%s\n ",buf);
-	
-	// printf("\n");
-
 	return bytes_read;
 }
 
 /** Return value 0 Success;-1 Error occured. 
  * Check ufs_errno() for a code. - UFS_ERR_NO_FILE - invalid file descriptor.*/
 int ufs_close(int fd) {
-	// printf("One\n");
 	if (fd >= fd_count || fd < 0 || fd_array[fd] == NULL) {
 		ufs_errn = UFS_ERR_NO_FILE;
-		// printf("Heya hooo\n");
 		return -1;
 	} 
-	// printf("Two\n");
+	
 	free(fd_array[fd]);
 	fd_array[fd] = NULL;
 
 	while (fd_count > 0 && fd_array[fd_count - 1] == NULL) {
-		// printf("%d\n",fd_count);
 		--fd_count;
 	}
-	// printf("Three\n");
+	
 	return 0;
 }
 
 /** Returns -1 if error occured. Check ufs_errno() for a code.
  * - UFS_ERR_NO_FILE - no such file. */
 int ufs_delete(const char *filename) {
-	printf("1\n");
 	struct file *current_file = file_list;
 
 	while (current_file) {
-		printf("here\n");
 		if (!strcmp(current_file->name, filename)) {
 			if (current_file != file_list)
 				current_file->prev->next = current_file->next;
 			if (current_file != last_file)	
 				current_file->next->prev = current_file->prev;
-			printf("rara\n");
+				
 			struct block *b = current_file->block_list, *next_block;
 			while (b) {
 				next_block = b->next;
@@ -299,20 +288,18 @@ int ufs_delete(const char *filename) {
 				free(b);
 				b = next_block;
 			} 
-			printf("HOBA\n");
+			
+			free(current_file->name);
 			free(current_file);
 			if (current_file == file_list) {
-				printf("Lookatme\n");
 				file_list = ((current_file->next) ? current_file->next : NULL);
 			}
 			current_file = NULL;
 
 			return 0;
 		}
-		printf("LALA\n");
 		current_file = current_file->next;
 	}
-	printf("OY\n");
 	ufs_errn = UFS_ERR_NO_FILE;
 
 	return -1;
