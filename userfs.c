@@ -32,6 +32,7 @@ static struct file *last_file = NULL;
 
 struct fdesc { 
 	struct file *file;
+	struct block *block_position;
 	int block_num; // where user left off
 	int offset; // and more precisely
 };
@@ -138,12 +139,15 @@ ssize_t ufs_write(int fd, const char *buf, size_t size) {
 		f->block_list = calloc(1, sizeof(struct block));
 		f->block_list->memory = malloc(BLOCK_SIZE);
 	}
-
-	struct block *current_block = f->block_list;
-	int i = 0;
-	for (i = 0; i < fd_array[fd]->block_num; ++i) {
-		current_block = next_block(current_block);
-	}
+	
+	struct block *current_block = ( fd_array[fd]->block_position ? 
+		fd_array[fd]->block_position : f->block_list );
+	// struct block *current_block = f->block_list;
+	int i = ( fd_array[fd]->block_num ? fd_array[fd]->block_num : 0 );
+	// for (i = 0; i < fd_array[fd]->block_num; ++i) {
+	// 	current_block = next_block(current_block);
+	// }
+	// struct block *current_block = fd_array[fd]->block_position;
 
 	size_t bytes_written = 0;
 	if (fd_array[fd]->offset) {
@@ -158,7 +162,7 @@ ssize_t ufs_write(int fd, const char *buf, size_t size) {
 			current_block = next_block(current_block);
 		}
 	}
-
+	
 	while (size) {
 		if (size <= BLOCK_SIZE) {
 			memcpy(current_block->memory, buf, size);
@@ -175,9 +179,15 @@ ssize_t ufs_write(int fd, const char *buf, size_t size) {
 
 		current_block = next_block(current_block);
 		++i;
+		// printf("%d\n",i);
+		if (i == MAX_FILE_SIZE / BLOCK_SIZE && size > BLOCK_SIZE) {
+			ufs_errn = UFS_ERR_NO_MEM;
+			return -1;
+		}
 	}
 
 	fd[fd_array]->block_num = i;
+	fd_array[fd]->block_position = current_block;
 	return bytes_written;
 }
 
@@ -193,11 +203,14 @@ ssize_t ufs_read(int fd, char *buf, size_t size) {
 	}
 
 	struct file *f = fd_array[fd]->file;
-	struct block *current_block = f->block_list;
-	int i = 0;
-	for (i = 0; i < fd_array[fd]->block_num; ++i) {
-		current_block = current_block->next;
-	}
+	// struct block *current_block = fd_array[fd]->block_position;
+	struct block *current_block = ( fd_array[fd]->block_position ? 
+		fd_array[fd]->block_position : f->block_list );
+	int i = ( fd_array[fd]->block_num ? fd_array[fd]->block_num : 0 );
+	// for (i = 0; i < fd_array[fd]->block_num; ++i) {
+	// 	current_block = current_block->next;
+	// }
+	
 	
 	int bytes_read = 0, curr_read = 0;
 	if (fd_array[fd]->offset) {
@@ -248,6 +261,7 @@ ssize_t ufs_read(int fd, char *buf, size_t size) {
 	}
 
 	fd_array[fd]->block_num = i;
+	fd_array[fd]->block_position = current_block;
 	return bytes_read;
 }
 
