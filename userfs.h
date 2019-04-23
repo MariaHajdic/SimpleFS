@@ -1,6 +1,6 @@
 #include <stddef.h>
 #include <sys/types.h>
-
+#define NEED_OPEN_FLAGS
 
 /** User-defined in-memory filesystem. It is as simple as possible. Each file
  * lies in the memory as an array of blocks. A file has a unique file name, and
@@ -9,6 +9,9 @@
 enum open_flags {
 	/** If the flag is specified and file does not exist - create it. */
 	UFS_CREATE = 1,
+	UFS_READ_ONLY = 2,
+	UFS_WRITE_ONLY = 4,
+	UFS_READ_WRITE = 8,
 };
 
 /** Possible errors from all functions. */
@@ -16,6 +19,7 @@ enum ufs_error_code {
 	UFS_ERR_NO_ERR = 0,
 	UFS_ERR_NO_FILE,
 	UFS_ERR_NO_MEM,
+	UFS_ERR_NO_PERMISSION,
 };
 
 /** Get code of the last error. */

@@ -35,6 +35,7 @@ struct fdesc {
 	struct block *block_position;
 	int block_num; // where user left off
 	int offset; // and more precisely
+	int flags;
 };
 
 /** An array of file descriptors. When a file descriptor is closed, its place
@@ -75,7 +76,7 @@ int ufs_open(const char *filename, int flags) {
 
 	current_file = calloc(1, sizeof(struct file));
 	current_file->name = malloc(strlen(filename));
-	memcpy(current_file->name, filename, strlen(filename));
+	memcpy(current_file->name, filename, strlen(filename) + 1);
 
 	if (file_list) {
 		last_file->next = current_file;
@@ -92,6 +93,7 @@ manage_fd:
 		if (fd_array[i] == NULL) {
 			struct fdesc *fd = calloc(1, sizeof(struct fdesc));
 			fd->file = current_file;
+			fd->flags = ( (flags <= 1) ? UFS_READ_WRITE : flags );
 			fd_array[i] = fd;
 			return i;
 		}
@@ -104,6 +106,7 @@ manage_fd:
 
 	struct fdesc *fd = calloc(1, sizeof(struct fdesc));
 	fd->file = current_file;
+	fd->flags = ( (flags <= 1) ? UFS_READ_WRITE : flags );
 	fd_array[fd_count] = fd;
 
 	return fd_count++;
@@ -130,6 +133,11 @@ ssize_t ufs_write(int fd, const char *buf, size_t size) {
 		return -1;
 	}
 
+	if (!(fd_array[fd]->flags & ( UFS_WRITE_ONLY | UFS_READ_WRITE ) )) {
+		ufs_errn = UFS_ERR_NO_PERMISSION;
+		return -1;
+	}
+
 	if (size <= 0) 
 		return 0;
 
@@ -142,21 +150,25 @@ ssize_t ufs_write(int fd, const char *buf, size_t size) {
 	
 	struct block *current_block = ( fd_array[fd]->block_position ? 
 		fd_array[fd]->block_position : f->block_list );
-	// struct block *current_block = f->block_list;
 	int i = ( fd_array[fd]->block_num ? fd_array[fd]->block_num : 0 );
-	// for (i = 0; i < fd_array[fd]->block_num; ++i) {
-	// 	current_block = next_block(current_block);
-	// }
-	// struct block *current_block = fd_array[fd]->block_position;
 
 	size_t bytes_written = 0;
 	if (fd_array[fd]->offset) {
 		int n = BLOCK_SIZE - fd_array[fd]->offset >= size ? 
 			size : BLOCK_SIZE - fd_array[fd]->offset;
+		if ( (i == MAX_FILE_SIZE / BLOCK_SIZE - 1) && 
+			(size > BLOCK_SIZE - fd_array[fd]->offset)) {
+			ufs_errn = UFS_ERR_NO_MEM;
+			return -1;
+		}
 		memcpy(current_block->memory + fd_array[fd]->offset, buf, n);
 		bytes_written += n;
 		size -= n;
 		buf += n;
+		current_block->occupied += ( (fd_array[fd]->offset + n < 
+			current_block->occupied) ? 0 : n - current_block->occupied +
+			fd_array[fd]->offset );
+
 		if (size) {
 			++i;
 			current_block = next_block(current_block);
@@ -168,7 +180,7 @@ ssize_t ufs_write(int fd, const char *buf, size_t size) {
 			memcpy(current_block->memory, buf, size);
 			bytes_written += size;
 			fd[fd_array]->offset = size;
-			current_block->occupied += size;
+			current_block->occupied = size;
 			break;
 		}
 		memcpy(current_block->memory, buf, BLOCK_SIZE);
@@ -179,8 +191,8 @@ ssize_t ufs_write(int fd, const char *buf, size_t size) {
 
 		current_block = next_block(current_block);
 		++i;
-		// printf("%d\n",i);
-		if (i == MAX_FILE_SIZE / BLOCK_SIZE && size > BLOCK_SIZE) {
+
+		if ( (i == MAX_FILE_SIZE / BLOCK_SIZE - 1) && size > BLOCK_SIZE) {
 			ufs_errn = UFS_ERR_NO_MEM;
 			return -1;
 		}
@@ -202,15 +214,15 @@ ssize_t ufs_read(int fd, char *buf, size_t size) {
 		return 0;
 	}
 
+	if (!(fd_array[fd]->flags & ( UFS_READ_ONLY | UFS_READ_WRITE ) )) {
+		ufs_errn = UFS_ERR_NO_PERMISSION;
+		return -1;
+	}
+
 	struct file *f = fd_array[fd]->file;
-	// struct block *current_block = fd_array[fd]->block_position;
 	struct block *current_block = ( fd_array[fd]->block_position ? 
 		fd_array[fd]->block_position : f->block_list );
 	int i = ( fd_array[fd]->block_num ? fd_array[fd]->block_num : 0 );
-	// for (i = 0; i < fd_array[fd]->block_num; ++i) {
-	// 	current_block = current_block->next;
-	// }
-	
 	
 	int bytes_read = 0, curr_read = 0;
 	if (fd_array[fd]->offset) {
@@ -224,10 +236,10 @@ ssize_t ufs_read(int fd, char *buf, size_t size) {
 			fd_array[fd]->offset = 0;
 		}
 
-		curr_read = ( (current_block->occupied > n) ? n : 
-			current_block->occupied );
-		bytes_read += curr_read;
+		curr_read = ( (current_block->occupied - offset > n) ? n : 
+			current_block->occupied - offset );
 		memcpy(buf, current_block->memory + offset, curr_read);
+		bytes_read += curr_read;
 		size -= n;
 		buf += n;
 
@@ -243,15 +255,16 @@ ssize_t ufs_read(int fd, char *buf, size_t size) {
 				current_block->occupied : size );
 			bytes_read += curr_read;
 			memcpy(buf, current_block->memory, curr_read);
-			fd_array[fd]->offset = size;
+			fd_array[fd]->offset = curr_read;
 			break;
 		}
 		curr_read = ( (current_block->occupied < size) ? 
 			current_block->occupied : BLOCK_SIZE );
-		bytes_read += curr_read;
 		memcpy(buf, current_block->memory, curr_read);
-		buf += BLOCK_SIZE;
+		bytes_read += curr_read;
 		size -= BLOCK_SIZE;
+		buf += BLOCK_SIZE;
+
 		current_block = current_block->next;
 		++i;
 		if (i == MAX_FILE_SIZE / BLOCK_SIZE && size > BLOCK_SIZE) {
@@ -303,11 +316,11 @@ int ufs_delete(const char *filename) {
 				b = next_block;
 			} 
 			
-			free(current_file->name);
-			free(current_file);
 			if (current_file == file_list) {
 				file_list = ((current_file->next) ? current_file->next : NULL);
 			}
+			free(current_file->name);
+			free(current_file);
 			current_file = NULL;
 
 			return 0;
