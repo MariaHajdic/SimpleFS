@@ -2,6 +2,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <stdbool.h>
 
 enum {
 	BLOCK_SIZE = 512,
@@ -23,6 +24,7 @@ struct file {
 	struct block *last_block;
 	int refs; // number of fds opened on file
 	char *name;
+	bool is_deleted;
 	struct file *next;
 	struct file *prev;
 };
@@ -76,6 +78,7 @@ int ufs_open(const char *filename, int flags) {
 
 	current_file = calloc(1, sizeof(struct file));
 	current_file->name = malloc(strlen(filename));
+	current_file->is_deleted = false;
 	memcpy(current_file->name, filename, strlen(filename) + 1);
 
 	if (file_list) {
@@ -285,6 +288,9 @@ int ufs_close(int fd) {
 		ufs_errn = UFS_ERR_NO_FILE;
 		return -1;
 	} 
+
+	if (!--fd_array[fd]->file->refs) 
+		ufs_delete(fd_array[fd]->file->name);
 	
 	free(fd_array[fd]);
 	fd_array[fd] = NULL;
@@ -303,6 +309,11 @@ int ufs_delete(const char *filename) {
 
 	while (current_file) {
 		if (!strcmp(current_file->name, filename)) {
+			if (--current_file->refs) { // decr or not?
+				current_file->is_deleted = true;
+				return 0;
+			}
+
 			if (current_file != file_list)
 				current_file->prev->next = current_file->next;
 			if (current_file != last_file)	
