@@ -20,11 +20,12 @@ struct block {
 };
 
 struct file {
+	char *name;
+	int size; // in bytes
+	int refs; // number of fds opened on file
+	bool is_deleted;
 	struct block *block_list;
 	struct block *last_block;
-	int refs; // number of fds opened on file
-	char *name;
-	bool is_deleted;
 	struct file *next;
 	struct file *prev;
 };
@@ -135,12 +136,14 @@ ssize_t ufs_write(int fd, const char *buf, size_t size) {
 		ufs_errn = UFS_ERR_NO_FILE;
 		return -1;
 	}
-
+	if (fd_array[fd]->file->size + size > MAX_FILE_SIZE) {
+		ufs_errn = UFS_ERR_NO_MEM;
+		return -1;
+	}
 	if (!(fd_array[fd]->flags & ( UFS_WRITE_ONLY | UFS_READ_WRITE ) )) {
 		ufs_errn = UFS_ERR_NO_PERMISSION;
 		return -1;
 	}
-
 	if (size <= 0) 
 		return 0;
 
@@ -191,14 +194,8 @@ ssize_t ufs_write(int fd, const char *buf, size_t size) {
 		size -= BLOCK_SIZE;
 		buf += BLOCK_SIZE;
 		current_block->occupied += BLOCK_SIZE;
-
 		current_block = next_block(current_block);
 		++i;
-
-		if ( (i == MAX_FILE_SIZE / BLOCK_SIZE - 1) && size > BLOCK_SIZE) {
-			ufs_errn = UFS_ERR_NO_MEM;
-			return -1;
-		}
 	}
 
 	fd[fd_array]->block_num = i;
@@ -267,13 +264,8 @@ ssize_t ufs_read(int fd, char *buf, size_t size) {
 		bytes_read += curr_read;
 		size -= BLOCK_SIZE;
 		buf += BLOCK_SIZE;
-
 		current_block = current_block->next;
 		++i;
-		if (i == MAX_FILE_SIZE / BLOCK_SIZE && size > BLOCK_SIZE) {
-			ufs_errn = UFS_ERR_NO_MEM;
-			return -1;
-		}
 	}
 
 	fd_array[fd]->block_num = i;
@@ -281,17 +273,15 @@ ssize_t ufs_read(int fd, char *buf, size_t size) {
 	return bytes_read;
 }
 
-/** Return value 0 Success;-1 Error occured. 
- * Check ufs_errno() for a code. - UFS_ERR_NO_FILE - invalid file descriptor.*/
 int ufs_close(int fd) {
 	if (fd >= fd_count || fd < 0 || fd_array[fd] == NULL) {
 		ufs_errn = UFS_ERR_NO_FILE;
 		return -1;
 	} 
 
-	if (!--fd_array[fd]->file->refs) 
+	if (fd_array[fd]->file->is_deleted && !--fd_array[fd]->file->refs)
 		ufs_delete(fd_array[fd]->file->name);
-	
+
 	free(fd_array[fd]);
 	fd_array[fd] = NULL;
 
@@ -302,17 +292,14 @@ int ufs_close(int fd) {
 	return 0;
 }
 
-/** Returns -1 if error occured. Check ufs_errno() for a code.
- * - UFS_ERR_NO_FILE - no such file. */
 int ufs_delete(const char *filename) {
 	struct file *current_file = file_list;
 
 	while (current_file) {
 		if (!strcmp(current_file->name, filename)) {
-			if (--current_file->refs) { // decr or not?
-				current_file->is_deleted = true;
+			current_file->is_deleted = true;
+			if (current_file->refs > 0) 
 				return 0;
-			}
 
 			if (current_file != file_list)
 				current_file->prev->next = current_file->next;
